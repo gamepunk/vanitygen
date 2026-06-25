@@ -7,7 +7,7 @@
 //! After `BATCH_SIZE` iterations a thread re-randomises its starting point to
 //! avoid approaching the curve-order boundary.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -89,7 +89,7 @@ pub fn is_match(
 /// mnemonic seed phrase together with the result.  This is **much slower**
 /// but allows importing the found key via a standard BIP39 wallet.
 ///
-/// This function **blocks** until a match is found.
+/// This function **blocks** until `target_count` matches are found.
 #[allow(clippy::too_many_arguments)]
 pub fn search(
     pattern: &str,
@@ -102,12 +102,13 @@ pub fn search(
     quiet: bool,
     match_mode: MatchMode,
     bip39_words: usize,
-) -> Result<(FoundResult, std::time::Duration), Error> {
+    target_count: usize,
+) -> Result<(Vec<FoundResult>, std::time::Duration), Error> {
     let pattern = Arc::new(pattern.to_string());
     let match_mode = Arc::new(match_mode);
-    let found = Arc::new(AtomicBool::new(false));
+    let found_count = Arc::new(AtomicU64::new(0));
     let counter = Arc::new(AtomicU64::new(0));
-    let result: Arc<Mutex<Option<FoundResult>>> = Arc::new(Mutex::new(None));
+    let results: Arc<Mutex<Vec<FoundResult>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Pre-compile regex if needed.
     let re: Option<Regex> = match *match_mode {
@@ -136,9 +137,9 @@ pub fn search(
         let cmp_pat = Arc::clone(&cmp_pat);
         let re = Arc::clone(&re);
         let match_mode = Arc::clone(&match_mode);
-        let found = Arc::clone(&found);
+        let found_count = Arc::clone(&found_count);
         let counter = Arc::clone(&counter);
-        let result = Arc::clone(&result);
+        let results = Arc::clone(&results);
 
         if use_bip32 {
             handles.push(std::thread::spawn(move || {
@@ -150,10 +151,11 @@ pub fn search(
                     addr_type,
                     case_insensitive,
                     network,
-                    found,
+                    found_count,
                     counter,
-                    result,
+                    results,
                     bip39_words,
+                    target_count,
                 );
             }));
         } else {
@@ -167,9 +169,10 @@ pub fn search(
                     case_insensitive,
                     compressed,
                     network,
-                    found,
+                    found_count,
                     counter,
-                    result,
+                    results,
+                    target_count,
                 );
             }));
         }
@@ -187,7 +190,8 @@ pub fn search(
     loop {
         std::thread::sleep(std::time::Duration::from_millis(1500));
 
-        if found.load(Ordering::Relaxed) {
+        let n_found = found_count.load(Ordering::Relaxed) as usize;
+        if n_found >= target_count {
             break;
         }
 
@@ -218,11 +222,12 @@ pub fn search(
     }
 
     let elapsed = start.elapsed();
-    let guard = result.lock().unwrap();
-    guard
-        .clone()
-        .map(|r| (r, elapsed))
-        .ok_or_else(|| Error::ThreadPool("no result found – unexpected".into()))
+    let guard = results.lock().unwrap();
+    if guard.is_empty() {
+        Err(Error::ThreadPool("no result found – unexpected".into()))
+    } else {
+        Ok((guard.clone(), elapsed))
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -239,15 +244,16 @@ fn worker(
     case_insensitive: bool,
     compressed: bool,
     network: Network,
-    found: Arc<AtomicBool>,
+    found_count: Arc<AtomicU64>,
     counter: Arc<AtomicU64>,
-    result: Arc<Mutex<Option<FoundResult>>>,
+    results: Arc<Mutex<Vec<FoundResult>>>,
+    target_count: usize,
 ) {
     let secp = Secp256k1::new();
     let tweak_one = Scalar::ONE;
 
     'restart: loop {
-        if found.load(Ordering::Relaxed) {
+        if found_count.load(Ordering::Relaxed) as usize >= target_count {
             return;
         }
 
@@ -261,7 +267,7 @@ fn worker(
         let mut pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
 
         for _ in 0..BATCH_SIZE {
-            if found.load(Ordering::Relaxed) {
+            if found_count.load(Ordering::Relaxed) as usize >= target_count {
                 return;
             }
 
@@ -300,17 +306,24 @@ fn worker(
             );
 
             if is_match {
-                if !found.swap(true, Ordering::SeqCst) {
-                    let wif = wif::format_wif(&sk, compressed, network);
-                    *result.lock().unwrap() = Some(FoundResult {
-                        address: addr_str,
-                        wif,
-                        total_attempts: n,
-                        mnemonic_phrase: None,
-                        derivation_path: None,
-                    });
+                let wif = wif::format_wif(&sk, compressed, network);
+                let found_result = FoundResult {
+                    address: addr_str,
+                    wif,
+                    total_attempts: n,
+                    mnemonic_phrase: None,
+                    derivation_path: None,
+                };
+                let mut list = results.lock().unwrap();
+                list.push(found_result);
+                found_count.fetch_add(1, Ordering::Relaxed);
+                // Drop the lock before checking if we're done.
+                drop(list);
+
+                if found_count.load(Ordering::Relaxed) as usize >= target_count {
+                    return;
                 }
-                return;
+                // Continue walking forward to find more matches.
             }
 
             // Walk forward: sk += 1, pk += G.
@@ -345,10 +358,11 @@ fn worker_bip32(
     addr_type: AddressType,
     case_insensitive: bool,
     network: Network,
-    found: Arc<AtomicBool>,
+    found_count: Arc<AtomicU64>,
     counter: Arc<AtomicU64>,
-    result: Arc<Mutex<Option<FoundResult>>>,
+    results: Arc<Mutex<Vec<FoundResult>>>,
     bip39_words: usize,
+    target_count: usize,
 ) {
     let secp = Secp256k1::new();
 
@@ -376,7 +390,7 @@ fn worker_bip32(
     };
 
     loop {
-        if found.load(Ordering::Relaxed) {
+        if found_count.load(Ordering::Relaxed) as usize >= target_count {
             return;
         }
 
@@ -417,17 +431,22 @@ fn worker_bip32(
         let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
 
         if is_match {
-            if !found.swap(true, Ordering::SeqCst) {
-                let wif = wif::format_wif(&child.private_key, true, network);
-                *result.lock().unwrap() = Some(FoundResult {
-                    address: addr_str,
-                    wif,
-                    total_attempts: n,
-                    mnemonic_phrase: Some(mnemonic.to_string()),
-                    derivation_path: Some(full_path_str),
-                });
+            let wif = wif::format_wif(&child.private_key, true, network);
+            let found_result = FoundResult {
+                address: addr_str,
+                wif,
+                total_attempts: n,
+                mnemonic_phrase: Some(mnemonic.to_string()),
+                derivation_path: Some(full_path_str.clone()),
+            };
+            let mut list = results.lock().unwrap();
+            list.push(found_result);
+            found_count.fetch_add(1, Ordering::Relaxed);
+            drop(list);
+
+            if found_count.load(Ordering::Relaxed) as usize >= target_count {
+                return;
             }
-            return;
         }
         // Not a match → generate a brand-new mnemonic and try again.
     }
@@ -472,7 +491,13 @@ mod tests {
         assert!(is_match("1ABCDef", "BCD", MatchMode::Anywhere, false, None));
         assert!(is_match("1ABCDef", "1AB", MatchMode::Anywhere, false, None));
         assert!(is_match("1ABCDef", "Def", MatchMode::Anywhere, false, None));
-        assert!(!is_match("1ABCDef", "XYZ", MatchMode::Anywhere, false, None));
+        assert!(!is_match(
+            "1ABCDef",
+            "XYZ",
+            MatchMode::Anywhere,
+            false,
+            None
+        ));
     }
 
     #[test]
@@ -482,8 +507,20 @@ mod tests {
         assert!(!is_match("1abcDef", "", MatchMode::Regex, false, Some(&re)));
 
         let re2 = Regex::new("pizza$").unwrap();
-        assert!(is_match("bc1qpizza", "", MatchMode::Regex, false, Some(&re2)));
-        assert!(!is_match("bc1qpizzz", "", MatchMode::Regex, false, Some(&re2)));
+        assert!(is_match(
+            "bc1qpizza",
+            "",
+            MatchMode::Regex,
+            false,
+            Some(&re2)
+        ));
+        assert!(!is_match(
+            "bc1qpizzz",
+            "",
+            MatchMode::Regex,
+            false,
+            Some(&re2)
+        ));
     }
 
     #[test]

@@ -83,6 +83,7 @@ vanitygen search 1Bit
 | `-a, --anywhere` | 关闭 | 子串匹配（地址任意位置） |
 | `-r, --regex` | 关闭 | 正则表达式匹配 |
 | `--words N` | `24` | BIP39 单词数: 12/15/18/21/24 (与 `--mnemonic` 配合) |
+| `-n, --count N` | `1` | 查找地址数量 |
 | `--input-file FILE` | — | 从文件读取模式（每行一个） |
 | `-o, --output-file FILE` | — | 将结果追加写入文件 |
 

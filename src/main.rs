@@ -74,6 +74,7 @@ fn main() {
             input_file,
             output_file,
             words,
+            count,
         } => {
             let match_mode = resolve_match_mode(*match_prefix, *suffix, *anywhere, *regex);
             if let Some(ifile) = input_file {
@@ -90,6 +91,7 @@ fn main() {
                     bark.as_deref(),
                     match_mode,
                     *words,
+                    *count,
                 )
             } else if let Some(pat) = prefix {
                 run_search(
@@ -105,6 +107,7 @@ fn main() {
                     bark.as_deref(),
                     match_mode,
                     *words,
+                    *count,
                 )
             } else {
                 // Should not happen due to clap required_unless_present.
@@ -142,6 +145,7 @@ fn run_search(
     bark_key: Option<&str>,
     match_mode: MatchMode,
     bip39_words: usize,
+    count: usize,
 ) -> Result<(), Error> {
     // Validate the pattern for the chosen address type (only for Prefix mode).
     if match_mode == MatchMode::Prefix {
@@ -184,7 +188,7 @@ fn run_search(
     }
 
     // ── Search ──────────────────────────────────────────────────────
-    let (found, elapsed) = search::search(
+    let (results, elapsed) = search::search(
         pattern,
         addr_type,
         case_insensitive,
@@ -195,86 +199,109 @@ fn run_search(
         quiet,
         match_mode,
         bip39_words,
+        count,
     )?;
 
     // ── Clear checkpoint + write log ───────────────────────────────
     checkpoint::clear();
+
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let total_attempts: u64 = results.iter().map(|r| r.total_attempts).max().unwrap_or(0);
+
     log::info(&format!(
-        "找到! pattern={}, address={}, attempts={}, elapsed={:.2}s",
+        "找到! pattern={}, matches={}, attempts={}, elapsed={:.2}s",
         pattern,
-        found.address,
-        found.total_attempts,
+        results.len(),
+        total_attempts,
         elapsed.as_secs_f64(),
     ));
 
-    let info = wif::parse_wif(&found.wif)?;
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-
-    // ── Send notification (if Bark key provided) ──────────────────
+    // ── Send notification (only for first match) ───────────────────
     if let Some(bk) = notify::resolve_key(bark_key, cfg.bark_key.as_deref()) {
-        let _ = notify::send_bark(
-            &bk,
-            "🎯 Vanity address found!",
-            &format!(
-                "Address: {}\nElapsed: {:.1}s",
-                found.address,
-                elapsed.as_secs_f64()
-            ),
-        );
+        if let Some(first) = results.first() {
+            let _ = notify::send_bark(
+                &bk,
+                &format!("🎯 {} vanity address(es) found!", results.len()),
+                &format!(
+                    "First: {}\nTotal attempts: {}\nElapsed: {:.1}s",
+                    first.address,
+                    total_attempts,
+                    elapsed.as_secs_f64()
+                ),
+            );
+        }
     }
 
+    // ── Display results ────────────────────────────────────────────
     if !quiet {
-        style::header("Found vanity address");
+        style::header(&format!(
+            "Found {} vanity address{}",
+            results.len(),
+            if results.len() > 1 { "es" } else { "" }
+        ));
     }
 
-    style::result_line("Address", &found.address);
-    style::result_line("WIF", &found.wif);
+    for (i, found) in results.iter().enumerate() {
+        if results.len() > 1 {
+            println!();
+            style::header(&format!("Match #{}", i + 1));
+        }
+        style::result_line("Address", &found.address);
+        style::result_line("WIF", &found.wif);
 
-    if let Some(ref phrase) = found.mnemonic_phrase {
+        if let Some(ref phrase) = found.mnemonic_phrase {
+            println!();
+            style::header("BIP39 Mnemonic");
+            println!("  {}", phrase);
+        }
+        if let Some(ref path) = found.derivation_path {
+            style::kv("derivation path", path);
+        }
         println!();
-        style::header("BIP39 Mnemonic");
-        println!("  {}", phrase);
-    }
-    if let Some(ref path) = found.derivation_path {
-        style::kv("derivation path", path);
+
+        // ── Wallet addresses for this match ────────────────────────
+        if let Some(ref phrase) = found.mnemonic_phrase {
+            let wallet_addrs = derive_wallet_addresses(phrase, 0, network)?;
+            style::header("Wallet addresses (index 0)");
+            println!("{}", wallet_addrs);
+            println!();
+            if i == results.len() - 1 {
+                style::warning(
+                    "Import the mnemonic into any BIP39 wallet. The above addresses will match exactly.",
+                );
+            }
+        } else {
+            let info = wif::parse_wif(&found.wif)?;
+            let all_addrs =
+                address::derive_all(&secp, &info.private_key.inner, info.compressed, network)?;
+            style::header("Same-key addresses");
+            style::result_line("Legacy (P2PKH)", &all_addrs.legacy.to_string());
+            style::result_line("Nested SegWit (P2SH)", &all_addrs.p2sh_segwit.to_string());
+            style::result_line(
+                "Native SegWit (P2WPKH)",
+                &all_addrs.native_segwit.to_string(),
+            );
+            style::result_line("Taproot (P2TR)", &all_addrs.taproot.to_string());
+        }
     }
 
     println!();
-    style::kv("attempts", &found.total_attempts.to_string());
+    style::kv("total attempts", &total_attempts.to_string());
     style::kv("elapsed", &format!("{:.2}s", elapsed.as_secs_f64()));
-    println!();
 
-    // ── Wallet addresses ───────────────────────────────────────────
-    if let Some(ref phrase) = found.mnemonic_phrase {
-        let wallet_addrs = derive_wallet_addresses(phrase, 0, network)?;
-        style::header("Wallet addresses (index 0)");
-        println!("{}", wallet_addrs);
+    if results.iter().all(|r| r.mnemonic_phrase.is_none()) {
         println!();
-        style::warning(
-            "Import the mnemonic into any BIP39 wallet. The above addresses will match exactly.",
-        );
-    } else {
-        let all_addrs =
-            address::derive_all(&secp, &info.private_key.inner, info.compressed, network)?;
-        style::header("Same-key addresses");
-        style::result_line("Legacy (P2PKH)", &all_addrs.legacy.to_string());
-        style::result_line("Nested SegWit (P2SH)", &all_addrs.p2sh_segwit.to_string());
-        style::result_line(
-            "Native SegWit (P2WPKH)",
-            &all_addrs.native_segwit.to_string(),
-        );
-        style::result_line("Taproot (P2TR)", &all_addrs.taproot.to_string());
+        style::warning("Move funds immediately. Clear terminal history.");
     }
-
-    println!();
-    style::warning("Move funds immediately. Clear terminal history.");
 
     // ── Write to output file if requested ──────────────────────────
     if let Some(path) = output_file {
-        append_result(path, pattern, &found, elapsed, match_mode)?;
+        for found in &results {
+            append_result(path, pattern, found, elapsed, match_mode)?;
+        }
         if !quiet {
             println!();
-            style::success(&format!("Result appended to {}", path));
+            style::success(&format!("{} result(s) appended to {}", results.len(), path));
         }
     }
 
@@ -304,6 +331,7 @@ fn run_search_file(
     bark_key: Option<&str>,
     cli_match_mode: MatchMode,
     bip39_words: usize,
+    count: usize,
 ) -> Result<(), Error> {
     use std::fs;
     use std::io::{BufRead, BufReader};
@@ -364,6 +392,7 @@ fn run_search_file(
             bark_key,
             line_match_mode,
             bip39_words,
+            count,
         ) {
             Ok(()) => {}
             Err(e) => {
@@ -657,22 +686,29 @@ mod tests {
 
     #[test]
     fn test_parse_line_flags_unknown_flag() {
-        let result =
-            parse_line_flags("test --unknown", MatchMode::Prefix, AddressType::Legacy, false);
+        let result = parse_line_flags(
+            "test --unknown",
+            MatchMode::Prefix,
+            AddressType::Legacy,
+            false,
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_line_flags_missing_type_value() {
-        let result =
-            parse_line_flags("test -t", MatchMode::Prefix, AddressType::Legacy, false);
+        let result = parse_line_flags("test -t", MatchMode::Prefix, AddressType::Legacy, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_line_flags_invalid_type() {
-        let result =
-            parse_line_flags("test -t invalid", MatchMode::Prefix, AddressType::Legacy, false);
+        let result = parse_line_flags(
+            "test -t invalid",
+            MatchMode::Prefix,
+            AddressType::Legacy,
+            false,
+        );
         assert!(result.is_err());
     }
 

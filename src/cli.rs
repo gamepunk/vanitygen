@@ -93,6 +93,10 @@ pub enum CliCommand {
         #[arg(long)]
         bark: Option<String>,
 
+        /// Number of addresses to find (search continues until this many are found).
+        #[arg(long, short = 'n', default_value = "1")]
+        count: usize,
+
         /// Input file with patterns (one per line). Overrides positional PREFIX.
         #[arg(long)]
         input_file: Option<String>,
@@ -361,10 +365,25 @@ mod tests {
 
     #[test]
     fn test_resolve_match_mode() {
-        assert_eq!(resolve_match_mode(false, false, false, false), MatchMode::Prefix);
-        assert_eq!(resolve_match_mode(true, false, false, false), MatchMode::Prefix);
-        assert_eq!(resolve_match_mode(false, true, false, false), MatchMode::Suffix);
-        assert_eq!(resolve_match_mode(false, false, true, false), MatchMode::Anywhere);
-        assert_eq!(resolve_match_mode(false, false, false, true), MatchMode::Regex);
+        assert_eq!(
+            resolve_match_mode(false, false, false, false),
+            MatchMode::Prefix
+        );
+        assert_eq!(
+            resolve_match_mode(true, false, false, false),
+            MatchMode::Prefix
+        );
+        assert_eq!(
+            resolve_match_mode(false, true, false, false),
+            MatchMode::Suffix
+        );
+        assert_eq!(
+            resolve_match_mode(false, false, true, false),
+            MatchMode::Anywhere
+        );
+        assert_eq!(
+            resolve_match_mode(false, false, false, true),
+            MatchMode::Regex
+        );
     }
 }

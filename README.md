@@ -85,6 +85,7 @@ vanitygen search 1Bit
 | `-a, --anywhere` | off | Match pattern anywhere in the address |
 | `-r, --regex` | off | Interpret pattern as a regular expression |
 | `--words N` | `24` | BIP39 word count: 12/15/18/21/24 (with `--mnemonic`) |
+| `-n, --count N` | `1` | Number of addresses to find |
 | `--input-file FILE` | — | Read patterns from file (one per line) |
 | `-o, --output-file FILE` | — | Append results to file |
 
