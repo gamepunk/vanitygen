@@ -100,8 +100,8 @@ pub fn clear() {
     let _ = fs::remove_file(CHECKPOINT_FILE);
 }
 
-/// Print checkpoint info to stderr and return whether the user wants to resume.
-pub fn print_and_confirm(checkpoint: &Checkpoint) -> bool {
+/// Print checkpoint info to stderr.
+pub fn print_and_confirm(checkpoint: &Checkpoint) {
     let ago = SystemTime::now()
         .duration_since(checkpoint.timestamp)
         .unwrap_or_default();
@@ -117,9 +117,6 @@ pub fn print_and_confirm(checkpoint: &Checkpoint) -> bool {
     );
     eprintln!("  距离上次:    {}", format_duration(ago));
     eprintln!("─────────────────────────────────────────────────────────────");
-    // Always resume — the checkpoint is informational only (search is
-    // stateless, so we just continue with fresh random keys).
-    true
 }
 
 fn format_duration(d: Duration) -> String {
