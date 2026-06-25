@@ -365,12 +365,23 @@ fn run_search_file(
     let total = lines.len();
     for (i, line) in lines.iter().enumerate() {
         // Parse line: extract pattern and optional inline flags.
-        let (pat, line_match_mode, line_addr_type, line_case_insensitive) =
-            parse_line_flags(line, cli_match_mode, cli_addr_type, cli_case_insensitive)?;
+        let (pat, line_match_mode, line_addr_type, line_case_insensitive, line_count) =
+            parse_line_flags(
+                line,
+                cli_match_mode,
+                cli_addr_type,
+                cli_case_insensitive,
+                count,
+            )?;
 
         if !quiet {
             println!();
-            style::header(&format!("[{}/{}] Searching for: {}", i + 1, total, pat));
+            let label = if line_count > 1 {
+                format!("{}/{} (count={})", i + 1, total, line_count)
+            } else {
+                format!("{}/{}", i + 1, total)
+            };
+            style::header(&format!("[{}] Searching for: {}", label, pat));
             if line_match_mode != cli_match_mode {
                 style::kv("mode", &format!("{:?}", line_match_mode));
             }
@@ -392,7 +403,7 @@ fn run_search_file(
             bark_key,
             line_match_mode,
             bip39_words,
-            count,
+            line_count,
         ) {
             Ok(()) => {}
             Err(e) => {
@@ -414,14 +425,16 @@ fn run_search_file(
 /// - `-r` / `--regex`          → Regex mode
 /// - `-t <type>` / `--address-type <type>` → address type
 /// - `-i` / `--case-insensitive` → case insensitive
+/// - `-n <N>` / `--count <N>`  → number of addresses to find for this pattern
 ///
-/// Returns (pattern, match_mode, address_type, case_insensitive).
+/// Returns (pattern, match_mode, address_type, case_insensitive, count).
 fn parse_line_flags(
     line: &str,
     default_mode: MatchMode,
     default_addr: AddressType,
     default_case: bool,
-) -> Result<(String, MatchMode, AddressType, bool), Error> {
+    default_count: usize,
+) -> Result<(String, MatchMode, AddressType, bool, usize), Error> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     if tokens.is_empty() {
         return Err(Error::Other("Empty line in input file".into()));
@@ -431,6 +444,7 @@ fn parse_line_flags(
     let mut mode = default_mode;
     let mut addr = default_addr;
     let mut case_insensitive = default_case;
+    let mut count = default_count;
     let mut i = 1;
 
     while i < tokens.len() {
@@ -440,6 +454,20 @@ fn parse_line_flags(
             "-a" | "--anywhere" => mode = MatchMode::Anywhere,
             "-r" | "--regex" => mode = MatchMode::Regex,
             "-i" | "--case-insensitive" => case_insensitive = true,
+            "-n" | "--count" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err(Error::Other(
+                        "Missing value for -n/--count in input file".into(),
+                    ));
+                }
+                count = tokens[i].parse::<usize>().map_err(|_| {
+                    Error::Other(format!(
+                        "Invalid count '{}' in input file line (expected a number)",
+                        tokens[i]
+                    ))
+                })?;
+            }
             "-t" | "--address-type" => {
                 i += 1;
                 if i >= tokens.len() {
@@ -461,7 +489,7 @@ fn parse_line_flags(
         i += 1;
     }
 
-    Ok((pattern, mode, addr, case_insensitive))
+    Ok((pattern, mode, addr, case_insensitive, count))
 }
 
 /// Append a search result to a file in a structured format.
@@ -637,51 +665,85 @@ mod tests {
 
     #[test]
     fn test_parse_line_flags_plain_pattern() {
-        let (pat, mode, addr, ci) =
-            parse_line_flags("1Bitcoin", MatchMode::Prefix, AddressType::Legacy, false).unwrap();
+        let (pat, mode, addr, ci, cnt) =
+            parse_line_flags("1Bitcoin", MatchMode::Prefix, AddressType::Legacy, false, 1).unwrap();
         assert_eq!(pat, "1Bitcoin");
         assert_eq!(mode, MatchMode::Prefix);
         assert_eq!(addr, AddressType::Legacy);
         assert!(!ci);
+        assert_eq!(cnt, 1);
     }
 
     #[test]
     fn test_parse_line_flags_suffix() {
-        let (pat, mode, addr, ci) =
-            parse_line_flags("pizza -s", MatchMode::Prefix, AddressType::Legacy, false).unwrap();
+        let (pat, mode, addr, ci, cnt) =
+            parse_line_flags("pizza -s", MatchMode::Prefix, AddressType::Legacy, false, 1).unwrap();
         assert_eq!(pat, "pizza");
         assert_eq!(mode, MatchMode::Suffix);
         assert_eq!(addr, AddressType::Legacy);
         assert!(!ci);
+        assert_eq!(cnt, 1);
     }
 
     #[test]
     fn test_parse_line_flags_anywhere_and_type() {
-        let (pat, mode, addr, ci) = parse_line_flags(
+        let (pat, mode, addr, ci, cnt) = parse_line_flags(
             "ninja -a -t segwit",
             MatchMode::Prefix,
             AddressType::Legacy,
             false,
+            1,
         )
         .unwrap();
         assert_eq!(pat, "ninja");
         assert_eq!(mode, MatchMode::Anywhere);
         assert_eq!(addr, AddressType::Segwit);
         assert!(!ci);
+        assert_eq!(cnt, 1);
     }
 
     #[test]
     fn test_parse_line_flags_regex_insensitive() {
-        let (pat, mode, _addr, ci) = parse_line_flags(
+        let (pat, mode, _addr, ci, cnt) = parse_line_flags(
             "^1A.*T$ -r -i",
             MatchMode::Prefix,
             AddressType::Legacy,
             false,
+            1,
         )
         .unwrap();
         assert_eq!(pat, "^1A.*T$");
         assert_eq!(mode, MatchMode::Regex);
         assert!(ci);
+        assert_eq!(cnt, 1);
+    }
+
+    #[test]
+    fn test_parse_line_flags_with_count() {
+        let (pat, _mode, _addr, _ci, cnt) = parse_line_flags(
+            "test -n 5",
+            MatchMode::Prefix,
+            AddressType::Legacy,
+            false,
+            1,
+        )
+        .unwrap();
+        assert_eq!(pat, "test");
+        assert_eq!(cnt, 5);
+    }
+
+    #[test]
+    fn test_parse_line_flags_with_count_override() {
+        let (pat, _mode, _addr, _ci, cnt) = parse_line_flags(
+            "test --count 10",
+            MatchMode::Prefix,
+            AddressType::Legacy,
+            false,
+            1,
+        )
+        .unwrap();
+        assert_eq!(pat, "test");
+        assert_eq!(cnt, 10);
     }
 
     #[test]
@@ -691,13 +753,20 @@ mod tests {
             MatchMode::Prefix,
             AddressType::Legacy,
             false,
+            1,
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_line_flags_missing_type_value() {
-        let result = parse_line_flags("test -t", MatchMode::Prefix, AddressType::Legacy, false);
+        let result = parse_line_flags("test -t", MatchMode::Prefix, AddressType::Legacy, false, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_line_flags_missing_count_value() {
+        let result = parse_line_flags("test -n", MatchMode::Prefix, AddressType::Legacy, false, 1);
         assert!(result.is_err());
     }
 
@@ -708,6 +777,7 @@ mod tests {
             MatchMode::Prefix,
             AddressType::Legacy,
             false,
+            1,
         );
         assert!(result.is_err());
     }
