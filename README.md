@@ -34,7 +34,7 @@ cargo build --release
 Or install globally:
 
 ```bash
-cargo install --git <repo-url>
+cargo install --git https://github.com/gamepunk/vanitygen.git
 vanitygen 1Bit
 ```
 
@@ -55,7 +55,8 @@ without it.
 
 ### `vanitygen` / `vanitygen search` — Search for a vanity address
 
-**Default command.**  Find an address whose string starts with a given prefix.
+**Default command.**  Find an address matching a pattern (prefix, suffix,
+anywhere, or regex).
 
 ```
 vanitygen 1Bit
@@ -73,6 +74,12 @@ vanitygen search 1Bit
 | `-T, --threads N` | all cores | Worker threads |
 | `-q, --quiet` | off | Suppress progress output |
 | `--bark KEY` | — | Bark API key for iOS push notification |
+| `-p, --match-prefix` | (default) | Match pattern as prefix |
+| `-s, --suffix` | off | Match pattern as suffix |
+| `-a, --anywhere` | off | Match pattern anywhere in the address |
+| `-r, --regex` | off | Interpret pattern as a regular expression |
+| `--input-file FILE` | — | Read patterns from file (one per line) |
+| `-o, --output-file FILE` | — | Append results to file |
 
 **Examples:**
 
@@ -96,6 +103,11 @@ $ vanitygen 1Pizza -T 8
   Nested SegWit (P2SH): 3Ji9hUqTq15rQd...
   Native SegWit (P2WPKH): bc1qpy7y0...
   Taproot (P2TR): bc1pxv50f...
+```
+
+Search with `-i` (case-insensitive, faster):
+```
+$ vanitygen 1bit -i -T 8
 ```
 
 Search with mnemonic (slower, outputs 24-word seed phrase):
@@ -128,6 +140,50 @@ Search other address types:
 vanitygen bc1qbit -t segwit
 vanitygen 3Pizza -t p2sh
 vanitygen bc1pbit -t taproot
+```
+
+**Match modes:**
+
+By default the pattern is matched as a **prefix** (the address starts with it).
+Use one of these flags to change the match behaviour:
+
+```bash
+# Suffix mode — address ends with "pizza"
+vanitygen pizza -s -t segwit
+
+# Anywhere mode — address contains "ninja"
+vanitygen ninja -a -t segwit
+
+# Regex mode — any regex pattern supported by the regex crate
+vanitygen '^1[A-Z]{3}.*[0-9]{2}$' -r -t legacy
+```
+
+**Batch mode (input / output files):**
+
+Create a file with one pattern per line (blank lines and `#` comments are
+skipped), then run:
+
+```bash
+vanitygen --input-file patterns.txt -o results.txt -t segwit
+```
+
+The input file format:
+```
+# My patterns
+1Bitcoin
+ninja
+pizza
+```
+
+Results are appended to the output file in a structured format:
+```
+---
+pattern: 1Bitcoin
+mode: Prefix
+address: 1BitcoinXXXXXXXXXXXXXX
+wif: Lxxxxxxxxxxxxxxxxxxxxxxx
+attempts: 12345
+elapsed: 10.23s
 ```
 
 ---

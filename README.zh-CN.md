@@ -1,7 +1,7 @@
-# vanity
+# vanitygen
 
 [![CI](https://github.com/gamepunk/vanitygen/actions/workflows/ci.yml/badge.svg)](https://github.com/gamepunk/vanitygen/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/badge/crates.io-v0.2.0-orange)](https://crates.io/crates/vanity)
+[![Crates.io](https://img.shields.io/crates/v/vanitygen.svg)](https://crates.io/crates/vanitygen)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [English](README.md)
@@ -34,7 +34,7 @@ cargo build --release
 或全局安装：
 
 ```bash
-cargo install --git https://github.com/gamepunk/vanity.git
+cargo install --git https://github.com/gamepunk/vanitygen.git
 vanitygen 1Bit
 ```
 
@@ -52,9 +52,9 @@ Bark 为可选项，不影响核心功能。
 
 ## 命令
 
-### `vanitygen` / `vanity search` — 搜索虚荣地址
+### `vanitygen` / `vanitygen search` — 搜索虚荣地址
 
-**默认命令。** 查找以指定前缀开头的地址。
+**默认命令。** 查找与模式匹配的地址（支持前缀、后缀、子串或正则）。
 
 ```
 vanitygen 1Bit
@@ -72,6 +72,12 @@ vanitygen search 1Bit
 | `-T, --threads N` | 所有核心 | 工作线程数 |
 | `-q, --quiet` | 关闭 | 静默模式 |
 | `--bark KEY` | — | Bark iOS 推送密钥 |
+| `-p, --match-prefix` | (默认) | 前缀匹配 |
+| `-s, --suffix` | 关闭 | 后缀匹配 |
+| `-a, --anywhere` | 关闭 | 子串匹配（地址任意位置） |
+| `-r, --regex` | 关闭 | 正则表达式匹配 |
+| `--input-file FILE` | — | 从文件读取模式（每行一个） |
+| `-o, --output-file FILE` | — | 将结果追加写入文件 |
 
 **示例：**
 
@@ -88,6 +94,48 @@ $ vanitygen 1Pizza -T 8
   WIF: L2VH7b3xpLkv1jN8bPNdw73tK8fH...
   attempts: 10,317
   elapsed: 11.2s
+```
+
+**匹配模式：**
+
+默认按**前缀**匹配（地址以该模式开头）。使用以下标志改变匹配行为：
+
+```bash
+# 后缀模式 — 地址以 "pizza" 结尾
+vanitygen pizza -s -t segwit
+
+# 子串模式 — 地址包含 "ninja"
+vanitygen ninja -a -t segwit
+
+# 正则模式 — 支持 regex crate 的全部语法
+vanitygen '^1[A-Z]{3}.*[0-9]{2}$' -r -t legacy
+```
+
+**批量模式（输入/输出文件）：**
+
+创建一个模式文件，每行一个模式（空行和 `#` 注释行会被忽略）：
+
+```bash
+vanitygen --input-file patterns.txt -o results.txt -t segwit
+```
+
+输入文件格式：
+```
+# 我的模式
+1Bitcoin
+ninja
+pizza
+```
+
+结果以结构化格式追加到输出文件：
+```
+---
+pattern: 1Bitcoin
+mode: Prefix
+address: 1BitcoinXXXXXXXXXXXXXX
+wif: Lxxxxxxxxxxxxxxxxxxxxxxx
+attempts: 12345
+elapsed: 10.23s
 ```
 
 ---
