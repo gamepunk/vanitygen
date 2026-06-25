@@ -4,6 +4,7 @@
 //! This module only contains glue logic.
 
 use crate::error::Error;
+use bech32::{hrp, segwit};
 use bitcoin::{
     secp256k1::{PublicKey as SecpPublicKey, Secp256k1, SecretKey},
     Address, CompressedPublicKey, Network, PublicKey, ScriptBuf,
@@ -147,6 +148,15 @@ pub fn p2sh_wpkh_address_fast(pubkey_bytes: &[u8]) -> String {
     payload[0] = 0x05;
     payload[1..21].copy_from_slice(&script_hash);
     base58check_encode_fast(&payload)
+}
+
+/// Fast native SegWit (P2WPKH) address string from a compressed public key.
+/// Skips the `Address` type entirely – returns the Bech32 string directly.
+#[inline]
+pub fn native_segwit_address_fast(pubkey_bytes: &[u8]) -> String {
+    let h160 = hash160(pubkey_bytes);
+    segwit::encode(hrp::BC, segwit::VERSION_0, &h160)
+        .expect("valid P2WPKH address (20-byte witness program)")
 }
 
 // ---------------------------------------------------------------------------

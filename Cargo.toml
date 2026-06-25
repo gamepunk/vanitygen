@@ -38,5 +38,6 @@ bip39 = { version = "2", features = ["rand"] }
 sha2 = "0.10"
 ripemd = "0.1"
 bs58 = "0.5"
+bech32 = "0.11"
 # ── Misc ─────────────────────────────────────────────────────────────
 rand = "0.8"                     # cryptographic random (OsRng)

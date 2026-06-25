@@ -15,7 +15,7 @@ use bip39::Mnemonic;
 use bitcoin::{
     bip32::{DerivationPath, Xpriv},
     secp256k1::{Scalar, Secp256k1, SecretKey},
-    Network,
+    Address, Network,
 };
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -319,12 +319,14 @@ fn worker(
                     let pk_bytes = pk.serialize(); // always compressed for P2SH
                     addr::p2sh_wpkh_address_fast(&pk_bytes)
                 }
-                _ => {
-                    let a = match derive_single(&secp, &sk, compressed, network, addr_type) {
-                        Ok(v) => v,
-                        Err(_) => continue 'restart,
-                    };
-                    a.to_string()
+                AddressType::Segwit => {
+                    let pk_bytes = pk.serialize(); // always compressed for SegWit
+                    addr::native_segwit_address_fast(&pk_bytes)
+                }
+                AddressType::Taproot => {
+                    let (x_only, _parity) = pk.x_only_public_key();
+                    let addr = Address::p2tr(&secp, x_only, None, network);
+                    addr.to_string()
                 }
             };
 
