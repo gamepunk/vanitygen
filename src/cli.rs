@@ -57,6 +57,10 @@ pub enum CliCommand {
         #[arg(long, short = 'm')]
         mnemonic: bool,
 
+        /// Number of BIP39 words (12/15/18/21/24). Only applies with --mnemonic.
+        #[arg(long, default_value = "24")]
+        words: usize,
+
         /// Use uncompressed public key (Legacy / P2PKH only; ignored with --mnemonic).
         #[arg(long, short = 'u')]
         uncompressed: bool,
@@ -116,9 +120,13 @@ pub enum CliCommand {
     #[command(aliases = ["b", "bench"])]
     Benchmark,
 
-    /// Generate a random BIP39 mnemonic (24 words) and derive all addresses.
+    /// Generate a random BIP39 mnemonic and derive all addresses.
     #[command(aliases = ["m"])]
-    Mnemonic,
+    Mnemonic {
+        /// Number of BIP39 words (12/15/18/21/24).
+        #[arg(long, default_value = "24")]
+        words: usize,
+    },
 }
 
 /// Supported address types.
@@ -138,6 +146,18 @@ pub enum MatchMode {
     Regex,
 }
 
+/// BIP39 word → entropy byte mapping.
+pub fn word_count_to_entropy_bytes(words: usize) -> Result<usize, String> {
+    match words {
+        12 => Ok(16),
+        15 => Ok(20),
+        18 => Ok(24),
+        21 => Ok(28),
+        24 => Ok(32),
+        _ => Err("Word count must be 12, 15, 18, 21, or 24".into()),
+    }
+}
+
 /// Resolve match mode from CLI flags (default: Prefix).
 pub fn resolve_match_mode(
     _match_prefix: bool,
@@ -155,7 +175,7 @@ pub fn resolve_match_mode(
         MatchMode::Prefix
     }
 }
-fn parse_address_type(s: &str) -> Result<AddressType, String> {
+pub fn parse_address_type(s: &str) -> Result<AddressType, String> {
     match s.to_lowercase().as_str() {
         "legacy" | "p2pkh" => Ok(AddressType::Legacy),
         "p2sh" | "p2sh-segwit" | "p2sh-p2wpkh" => Ok(AddressType::P2sh),

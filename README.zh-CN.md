@@ -82,6 +82,7 @@ vanitygen search 1Bit
 | `-s, --suffix` | 关闭 | 后缀匹配 |
 | `-a, --anywhere` | 关闭 | 子串匹配（地址任意位置） |
 | `-r, --regex` | 关闭 | 正则表达式匹配 |
+| `--words N` | `24` | BIP39 单词数: 12/15/18/21/24 (与 `--mnemonic` 配合) |
 | `--input-file FILE` | — | 从文件读取模式（每行一个） |
 | `-o, --output-file FILE` | — | 将结果追加写入文件 |
 
@@ -118,9 +119,12 @@ vanitygen 1bit -i -T 8
 vanitygen 1Pizza -u -T 8
 ```
 
-BIP39 助记词模式（更慢，但输出 24 词助记词）：
+BIP39 助记词模式（更慢，但输出助记词种子，默认 24 词）：
 ```bash
 vanitygen 1Pizza -m
+
+# 指定 12 词助记词
+vanitygen 1Pizza -m --words 12
 ```
 
 其他地址类型：
@@ -151,20 +155,32 @@ vanitygen '^1[A-Z]{3}.*[0-9]{2}$' -r -t legacy
 vanitygen 'pizza$' -r -t segwit
 ```
 
-**批量模式（输入/输出文件）：**
-
-创建一个模式文件，每行一个模式（空行和 `#` 注释行会被忽略）：
+**助记词单词数：**
 
 ```bash
-vanitygen --input-file patterns.txt -o results.txt -t segwit
+# 12 词助记词（生成更快，依然安全）
+vanitygen 1Pizza -m --words 12
+
+# 默认：24 词（256 位安全强度）
+vanitygen 1Pizza -m
+```
+
+**批量模式（输入/输出文件）：**
+
+创建一个模式文件，每行一个模式（空行和 `#` 注释行会被忽略）。
+每行可在模式后附加内联标志：
+
+```bash
+vanitygen --input-file patterns.txt -o results.txt
 ```
 
 输入文件格式：
 ```
 # 我的模式
-1Bitcoin
-ninja
-pizza
+1Bitcoin                # 使用 CLI 默认值（前缀、legacy）
+ninja -a -t segwit      # 子串模式，segwit 地址
+pizza -s -i             # 后缀模式，大小写不敏感
+^1A.*T$ -r              # 正则模式
 ```
 
 结果以结构化格式追加到输出文件：

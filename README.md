@@ -84,6 +84,7 @@ vanitygen search 1Bit
 | `-s, --suffix` | off | Match pattern as suffix |
 | `-a, --anywhere` | off | Match pattern anywhere in the address |
 | `-r, --regex` | off | Interpret pattern as a regular expression |
+| `--words N` | `24` | BIP39 word count: 12/15/18/21/24 (with `--mnemonic`) |
 | `--input-file FILE` | — | Read patterns from file (one per line) |
 | `-o, --output-file FILE` | — | Append results to file |
 
@@ -121,7 +122,7 @@ Search with uncompressed public key (Legacy only):
 vanitygen 1Pizza -u -T 8
 ```
 
-Search with mnemonic (slower, outputs BIP39 seed phrase):
+Search with mnemonic (slower, outputs BIP39 seed phrase, 24 words by default):
 ```
 $ vanitygen 1Pizza -m
 >> Searching
@@ -175,21 +176,32 @@ vanitygen '^1[A-Z]{3}.*[0-9]{2}$' -r -t legacy
 vanitygen 'pizza$' -r -t segwit
 ```
 
+**Mnemonic word count:**
+
+```bash
+# 12-word mnemonic (faster generation, still secure)
+vanitygen 1Pizza -m --words 12
+
+# Default: 24 words (256-bit security)
+vanitygen 1Pizza -m
+```
+
 **Batch mode (input / output files):**
 
 Create a file with one pattern per line (blank lines and `#` comments are
-skipped), then run:
+skipped). Each line can optionally include inline flags after the pattern:
 
 ```bash
-vanitygen --input-file patterns.txt -o results.txt -t segwit
+vanitygen --input-file patterns.txt -o results.txt
 ```
 
 The input file format:
 ```
 # My patterns
-1Bitcoin
-ninja
-pizza
+1Bitcoin              # uses CLI defaults (prefix, legacy)
+ninja -a -t segwit    # anywhere mode, segwit address
+pizza -s -i           # suffix mode, case-insensitive
+^1A.*T$ -r            # regex mode
 ```
 
 Results are appended to the output file in a structured format:

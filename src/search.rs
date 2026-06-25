@@ -101,6 +101,7 @@ pub fn search(
     use_bip32: bool,
     quiet: bool,
     match_mode: MatchMode,
+    bip39_words: usize,
 ) -> Result<(FoundResult, std::time::Duration), Error> {
     let pattern = Arc::new(pattern.to_string());
     let match_mode = Arc::new(match_mode);
@@ -152,6 +153,7 @@ pub fn search(
                     found,
                     counter,
                     result,
+                    bip39_words,
                 );
             }));
         } else {
@@ -346,6 +348,7 @@ fn worker_bip32(
     found: Arc<AtomicBool>,
     counter: Arc<AtomicU64>,
     result: Arc<Mutex<Option<FoundResult>>>,
+    bip39_words: usize,
 ) {
     let secp = Secp256k1::new();
 
@@ -363,13 +366,22 @@ fn worker_bip32(
         .parse()
         .expect("static BIP32 path is always valid");
 
+    // Map word count to entropy bytes.
+    let entropy_len = match bip39_words {
+        12 => 16,
+        15 => 20,
+        18 => 24,
+        21 => 28,
+        _ => 32,
+    };
+
     loop {
         if found.load(Ordering::Relaxed) {
             return;
         }
 
-        // ── Generate a fresh BIP39 mnemonic (256-bit / 24 words) ────
-        let mut entropy = [0u8; 32];
+        // ── Generate a fresh BIP39 mnemonic ─────────────────────────
+        let mut entropy = vec![0u8; entropy_len];
         OsRng.fill_bytes(&mut entropy);
         let mnemonic = match Mnemonic::from_entropy(&entropy) {
             Ok(m) => m,

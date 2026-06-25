@@ -34,7 +34,10 @@ use std::process;
 use bitcoin::Network;
 use clap::Parser;
 
-use cli::{resolve_match_mode, validate_prefix, AddressType, Cli, CliCommand, MatchMode};
+use cli::{
+    parse_address_type, resolve_match_mode, validate_prefix, AddressType, Cli, CliCommand,
+    MatchMode,
+};
 use error::Error;
 
 fn main() {
@@ -70,6 +73,7 @@ fn main() {
             bark,
             input_file,
             output_file,
+            words,
         } => {
             let match_mode = resolve_match_mode(*match_prefix, *suffix, *anywhere, *regex);
             if let Some(ifile) = input_file {
@@ -85,6 +89,7 @@ fn main() {
                     *quiet,
                     bark.as_deref(),
                     match_mode,
+                    *words,
                 )
             } else if let Some(pat) = prefix {
                 run_search(
@@ -99,6 +104,7 @@ fn main() {
                     *quiet,
                     bark.as_deref(),
                     match_mode,
+                    *words,
                 )
             } else {
                 // Should not happen due to clap required_unless_present.
@@ -110,7 +116,7 @@ fn main() {
         CliCommand::Verify { wif } => verify::run(wif),
         CliCommand::Address { wif } => run_address(wif),
         CliCommand::Benchmark => benchmark::run(),
-        CliCommand::Mnemonic => run_mnemonic(),
+        CliCommand::Mnemonic { words } => run_mnemonic(*words),
     };
 
     if let Err(e) = result {
@@ -135,6 +141,7 @@ fn run_search(
     quiet: bool,
     bark_key: Option<&str>,
     match_mode: MatchMode,
+    bip39_words: usize,
 ) -> Result<(), Error> {
     // Validate the pattern for the chosen address type (only for Prefix mode).
     if match_mode == MatchMode::Prefix {
@@ -171,6 +178,7 @@ fn run_search(
         style::kv("threads", &threads.to_string());
         if use_bip32 {
             style::kv("source", "BIP39+BIP32");
+            style::kv("words", &bip39_words.to_string());
         }
         eprintln!();
     }
@@ -186,6 +194,7 @@ fn run_search(
         use_bip32,
         quiet,
         match_mode,
+        bip39_words,
     )?;
 
     // ── Clear checkpoint + write log ───────────────────────────────
@@ -273,19 +282,28 @@ fn run_search(
 }
 
 /// Process patterns from an input file (one per line).
+///
+/// Each line can optionally include inline flags after the pattern:
+/// ```text
+/// 1Bitcoin              # uses CLI defaults
+/// ninja -a -t segwit    # anywhere mode, segwit
+/// pizza -s -i           # suffix mode, case-insensitive
+/// ^1A.*T$ -r            # regex mode
+/// ```
 #[allow(clippy::too_many_arguments)]
 fn run_search_file(
     cfg: &config::Config,
     input_file: &str,
     output_file: Option<&str>,
-    addr_type: AddressType,
-    case_insensitive: bool,
+    cli_addr_type: AddressType,
+    cli_case_insensitive: bool,
     uncompressed: bool,
     use_bip32: bool,
     threads: usize,
     quiet: bool,
     bark_key: Option<&str>,
-    match_mode: MatchMode,
+    cli_match_mode: MatchMode,
+    bip39_words: usize,
 ) -> Result<(), Error> {
     use std::fs;
     use std::io::{BufRead, BufReader};
@@ -293,14 +311,14 @@ fn run_search_file(
     let file = fs::File::open(input_file)
         .map_err(|e| Error::Other(format!("Cannot open input file '{}': {e}", input_file)))?;
     let reader = BufReader::new(file);
-    let patterns: Vec<String> = reader
+    let lines: Vec<String> = reader
         .lines()
         .map_while(Result::ok)
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
 
-    if patterns.is_empty() {
+    if lines.is_empty() {
         return Err(Error::Other(format!(
             "No patterns found in input file '{}'",
             input_file
@@ -309,32 +327,43 @@ fn run_search_file(
 
     if !quiet {
         style::header("Batch search");
-        style::kv("patterns", &patterns.len().to_string());
-        style::kv("mode", &format!("{:?}", match_mode));
-        style::kv("type", addr_type.label());
+        style::kv("patterns", &lines.len().to_string());
+        style::kv("mode", &format!("{:?}", cli_match_mode));
+        style::kv("type", cli_addr_type.label());
         style::kv("threads", &threads.to_string());
         eprintln!();
     }
 
-    let total = patterns.len();
-    for (i, pat) in patterns.iter().enumerate() {
+    let total = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        // Parse line: extract pattern and optional inline flags.
+        let (pat, line_match_mode, line_addr_type, line_case_insensitive) =
+            parse_line_flags(line, cli_match_mode, cli_addr_type, cli_case_insensitive)?;
+
         if !quiet {
             println!();
             style::header(&format!("[{}/{}] Searching for: {}", i + 1, total, pat));
+            if line_match_mode != cli_match_mode {
+                style::kv("mode", &format!("{:?}", line_match_mode));
+            }
+            if line_addr_type != cli_addr_type {
+                style::kv("type", line_addr_type.label());
+            }
         }
 
         match run_search(
             cfg,
-            pat,
+            &pat,
             output_file,
-            addr_type,
-            case_insensitive,
+            line_addr_type,
+            line_case_insensitive,
             uncompressed,
             use_bip32,
             threads,
             quiet,
             bark_key,
-            match_mode,
+            line_match_mode,
+            bip39_words,
         ) {
             Ok(()) => {}
             Err(e) => {
@@ -345,6 +374,65 @@ fn run_search_file(
     }
 
     Ok(())
+}
+
+/// Parse a single input-file line for optional inline flags.
+///
+/// Supported inline flags:
+/// - `-p` / `--prefix`         → Prefix mode
+/// - `-s` / `--suffix`         → Suffix mode
+/// - `-a` / `--anywhere`       → Anywhere mode
+/// - `-r` / `--regex`          → Regex mode
+/// - `-t <type>` / `--address-type <type>` → address type
+/// - `-i` / `--case-insensitive` → case insensitive
+///
+/// Returns (pattern, match_mode, address_type, case_insensitive).
+fn parse_line_flags(
+    line: &str,
+    default_mode: MatchMode,
+    default_addr: AddressType,
+    default_case: bool,
+) -> Result<(String, MatchMode, AddressType, bool), Error> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.is_empty() {
+        return Err(Error::Other("Empty line in input file".into()));
+    }
+
+    let pattern = tokens[0].to_string();
+    let mut mode = default_mode;
+    let mut addr = default_addr;
+    let mut case_insensitive = default_case;
+    let mut i = 1;
+
+    while i < tokens.len() {
+        match tokens[i] {
+            "-p" | "--prefix" => mode = MatchMode::Prefix,
+            "-s" | "--suffix" => mode = MatchMode::Suffix,
+            "-a" | "--anywhere" => mode = MatchMode::Anywhere,
+            "-r" | "--regex" => mode = MatchMode::Regex,
+            "-i" | "--case-insensitive" => case_insensitive = true,
+            "-t" | "--address-type" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return Err(Error::Other(
+                        "Missing value for -t/--address-type in input file".into(),
+                    ));
+                }
+                addr = parse_address_type(tokens[i]).map_err(|e| {
+                    Error::Other(format!("Invalid address type in input file: {e}"))
+                })?;
+            }
+            other => {
+                return Err(Error::Other(format!(
+                    "Unknown flag '{}' in input file line: {}",
+                    other, line
+                )));
+            }
+        }
+        i += 1;
+    }
+
+    Ok((pattern, mode, addr, case_insensitive))
 }
 
 /// Append a search result to a file in a structured format.
@@ -466,10 +554,12 @@ fn run_address(wif_str: &str) -> Result<(), Error> {
 }
 
 /// Generate a random BIP39 mnemonic and display all derived addresses.
-fn run_mnemonic() -> Result<(), Error> {
-    let result = mnemonic::generate_random()?;
+fn run_mnemonic(words: usize) -> Result<(), Error> {
+    let entropy_bytes = cli::word_count_to_entropy_bytes(words).map_err(Error::Other)?;
+    let result = mnemonic::generate_random(entropy_bytes)?;
 
-    style::header("BIP39 Mnemonic (24 words, 256-bit)");
+    let bits = entropy_bytes * 8;
+    style::header(&format!("BIP39 Mnemonic ({} words, {}-bit)", words, bits));
     println!("  {}", result.phrase);
     println!();
 
@@ -477,14 +567,14 @@ fn run_mnemonic() -> Result<(), Error> {
         style::header(p.label);
         style::kv("path", &p.path);
         style::kv("WIF", &p.wif);
-        style::result_line("P2PKH", &p.legacy);
-        style::result_line("P2SH", &p.p2sh);
-        style::result_line("P2WPKH", &p.segwit);
-        style::result_line("P2TR", &p.taproot);
+        style::result_line("Legacy (P2PKH)", &p.legacy);
+        style::result_line("Nested SegWit (P2SH)", &p.p2sh);
+        style::result_line("Native SegWit (P2WPKH)", &p.segwit);
+        style::result_line("Taproot (P2TR)", &p.taproot);
         println!();
     }
 
-    style::warning("Write down these 24 words. Keep them offline. Anyone with this phrase can steal your funds.");
+    style::warning(&format!("Write down these {} words. Keep them offline. Anyone with this phrase can steal your funds.", words));
     style::warning("Test with a small amount before depositing significant funds.");
 
     Ok(())

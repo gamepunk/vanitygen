@@ -50,11 +50,13 @@ pub struct PathInfo {
     pub taproot: String,
 }
 
-/// Generate a random BIP39 mnemonic (256-bit / 24 words) and derive
-/// standard addresses for each BIP44 / BIP49 / BIP84 / BIP86 path.
-pub fn generate_random() -> Result<MnemonicResult, Error> {
-    // ── 256 bits of true random entropy ────────────────────────────
-    let mut entropy = [0u8; 32];
+/// Generate a random BIP39 mnemonic and derive standard addresses for
+/// each BIP44 / BIP49 / BIP84 / BIP86 path.
+///
+/// `entropy_bytes` must be 16 (12 words), 20 (15), 24 (18), 28 (21), or 32 (24).
+pub fn generate_random(entropy_bytes: usize) -> Result<MnemonicResult, Error> {
+    // ── entropy ────────────────────────────────────────────────────
+    let mut entropy = vec![0u8; entropy_bytes];
     OsRng.fill_bytes(&mut entropy);
 
     // ── BIP39 mnemonic ─────────────────────────────────────────────
