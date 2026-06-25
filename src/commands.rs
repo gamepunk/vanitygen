@@ -60,6 +60,7 @@ pub fn entry() {
             output_file,
             words,
             count,
+            no_strip_prefix,
         } => {
             let match_mode = resolve_match_mode(*match_prefix, *suffix, *anywhere, *regex);
             if let Some(ifile) = input_file {
@@ -79,6 +80,7 @@ pub fn entry() {
                     *count,
                 )
             } else if let Some(pat) = prefix {
+                let strip_prefix = !no_strip_prefix;
                 let sc = SearchConfig {
                     pattern: pat,
                     addr_type: *address_type,
@@ -93,6 +95,7 @@ pub fn entry() {
                     target_count: *count,
                     output_file: output_file.as_deref(),
                     bark_key: bark.as_deref(),
+                    strip_prefix,
                 };
                 run_search(&cfg, sc)
             } else {
@@ -152,6 +155,7 @@ pub struct SearchConfig<'a> {
     pub target_count: usize,
     pub output_file: Option<&'a str>,
     pub bark_key: Option<&'a str>,
+    pub strip_prefix: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -162,16 +166,13 @@ pub struct SearchConfig<'a> {
 pub fn run_search(cfg: &config::Config, sc: SearchConfig) -> Result<(), Error> {
     // Validate the pattern for the chosen address type (only for Prefix mode).
     if sc.match_mode == MatchMode::Prefix {
-        if let Err(msg) = cli::validate_prefix(sc.pattern, sc.addr_type) {
+        if let Err(msg) = cli::validate_prefix(sc.pattern, sc.addr_type, sc.strip_prefix) {
             return Err(Error::InvalidPrefix(msg));
         }
     }
 
     // ── Self-test ───────────────────────────────────────────────────
     crate::self_test::run()?;
-    if !sc.quiet {
-        style::success("Self-test passed");
-    }
 
     // ── Checkpoint ──────────────────────────────────────────────────
     if let Some(ref cp) = crate::checkpoint::load() {
@@ -216,6 +217,7 @@ pub fn run_search(cfg: &config::Config, sc: SearchConfig) -> Result<(), Error> {
         match_mode: sc.match_mode,
         bip39_words: sc.bip39_words,
         target_count: sc.target_count,
+        strip_prefix: sc.strip_prefix,
     })?;
 
     // ── Clear checkpoint + write log ───────────────────────────────
@@ -308,6 +310,13 @@ pub fn run_search(cfg: &config::Config, sc: SearchConfig) -> Result<(), Error> {
     if results.iter().all(|r| r.mnemonic_phrase.is_none()) {
         println!();
         style::warning("Move funds immediately. Clear terminal history.");
+    }
+
+    // ── Auto-save to ~/.config/vanitygen/results.txt ──────────────
+    let results_dir = dirs_config_path().join("vanitygen");
+    let auto_path = results_dir.join("results.txt");
+    if let Err(e) = auto_save_results(&auto_path, sc.pattern, &results, elapsed, sc.match_mode, &secp, sc.network) {
+        log::info(&format!("Failed to save results to {}: {e}", auto_path.display()));
     }
 
     // ── Write to output file if requested ──────────────────────────
@@ -419,6 +428,7 @@ pub fn run_search_file(
             target_count: line_count,
             output_file,
             bark_key,
+            strip_prefix: true,
         };
 
         match run_search(cfg, sc) {
@@ -514,7 +524,90 @@ pub fn parse_line_flags(
 }
 
 // ---------------------------------------------------------------------------
-// Result file output
+// Auto-save results
+// ---------------------------------------------------------------------------
+
+/// Get the standard config directory (`~/.config/` or `$XDG_CONFIG_HOME`).
+fn dirs_config_path() -> std::path::PathBuf {
+    std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".config")
+        })
+}
+
+/// Auto-save search results to a file with rich fields.
+fn auto_save_results(
+    path: &std::path::Path,
+    pattern: &str,
+    results: &[search::FoundResult],
+    elapsed: std::time::Duration,
+    match_mode: MatchMode,
+    secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+    network: Network,
+) -> Result<(), Error> {
+    use std::fs::{create_dir_all, OpenOptions};
+    use std::io::Write;
+
+    // Ensure directory exists.
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent).map_err(|e| {
+            Error::Other(format!("Cannot create results directory '{}': {e}", parent.display()))
+        })?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| Error::Other(format!("Cannot open results file '{}': {e}", path.display())))?;
+
+    let timestamp = format!("{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0));
+
+    for found in results {
+        writeln!(file, "---")?;
+        writeln!(file, "created_at: {}", timestamp)?;
+        writeln!(file, "pattern: {pattern}")?;
+        writeln!(file, "mode: {:?}", match_mode)?;
+        writeln!(file, "address: {}", found.address)?;
+        writeln!(file, "wif: {}", found.wif)?;
+
+        // Parse WIF to derive public key and all address types.
+        if let Ok(info) = wif::parse_wif(&found.wif) {
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(secp, &info.private_key.inner);
+            writeln!(file, "public_key: {}", pk)?;
+
+            if let Ok(addrs) =
+                address::derive_all(secp, &info.private_key.inner, info.compressed, network)
+            {
+                writeln!(file, "legacy_p2pkh: {}", addrs.legacy)?;
+                writeln!(file, "p2sh_segwit: {}", addrs.p2sh_segwit)?;
+                writeln!(file, "native_segwit: {}", addrs.native_segwit)?;
+                writeln!(file, "taproot: {}", addrs.taproot)?;
+            }
+        }
+
+        if let Some(ref phrase) = found.mnemonic_phrase {
+            writeln!(file, "mnemonic: {phrase}")?;
+        }
+        if let Some(ref path) = found.derivation_path {
+            writeln!(file, "derivation_path: {path}")?;
+        }
+
+        writeln!(file, "attempts: {}", found.total_attempts)?;
+        writeln!(file, "elapsed_secs: {:.2}", elapsed.as_secs_f64())?;
+        writeln!(file)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Result file output (-o / --output-file)
 // ---------------------------------------------------------------------------
 
 /// Append a single search result to a file in a structured format.

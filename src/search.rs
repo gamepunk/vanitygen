@@ -45,23 +45,51 @@ pub struct FoundResult {
     pub derivation_path: Option<String>,
 }
 
-// -----------------------------------------------------------------------
-// Matching helper
-// -----------------------------------------------------------------------
+// ── Address-type prefixes ──────────────────────────────────────────────
+
+fn addr_type_prefix(addr_type: AddressType) -> &'static str {
+    match addr_type {
+        AddressType::Legacy => "1",
+        AddressType::P2sh => "3",
+        AddressType::Segwit => "bc1q",
+        AddressType::Taproot => "bc1p",
+    }
+}
+
+/// Strip the address-type prefix from `addr` if it matches.
+fn strip_addr_prefix<'a>(addr: &'a str, addr_type: AddressType) -> &'a str {
+    let pfx = addr_type_prefix(addr_type);
+    if let Some(rest) = addr.strip_prefix(pfx) { rest } else { addr }
+}
+
+// ── Matching helper ─────────────────────────────────────────────────────
 
 /// Check whether `addr` matches `pattern` according to `mode`.
 /// For Regex mode, `re` is a pre-compiled `Regex`; pass `None` otherwise.
+/// When `strip_prefix` is true, the address-type prefix is removed before
+/// matching, so users can search for "Bit" instead of "1Bit".
 pub fn is_match(
     addr: &str,
     pattern: &str,
     mode: MatchMode,
     case_insensitive: bool,
     re: Option<&Regex>,
+    addr_type: Option<AddressType>,
+    strip_prefix: bool,
 ) -> bool {
-    let s = if case_insensitive {
-        addr.to_lowercase()
+    let match_str = if strip_prefix {
+        if let Some(at) = addr_type {
+            strip_addr_prefix(addr, at)
+        } else {
+            addr
+        }
     } else {
-        addr.to_string()
+        addr
+    };
+    let s = if case_insensitive {
+        match_str.to_lowercase()
+    } else {
+        match_str.to_string()
     };
     match mode {
         MatchMode::Prefix => s.starts_with(pattern),
@@ -98,6 +126,7 @@ pub struct SearchParams<'a> {
     pub match_mode: MatchMode,
     pub bip39_words: usize,
     pub target_count: usize,
+    pub strip_prefix: bool,
 }
 
 /// Launch multiple workers to search for addresses matching the given
@@ -154,6 +183,7 @@ pub fn search(params: SearchParams) -> Result<(Vec<FoundResult>, std::time::Dura
                     results,
                     params.bip39_words,
                     params.target_count,
+                    params.strip_prefix,
                 );
             }));
         } else {
@@ -171,6 +201,7 @@ pub fn search(params: SearchParams) -> Result<(Vec<FoundResult>, std::time::Dura
                     counter,
                     results,
                     params.target_count,
+                    params.strip_prefix,
                 );
             }));
         }
@@ -246,6 +277,7 @@ fn worker(
     counter: Arc<AtomicU64>,
     results: Arc<Mutex<Vec<FoundResult>>>,
     target_count: usize,
+    strip_prefix: bool,
 ) {
     let secp = Secp256k1::new();
     let tweak_one = Scalar::ONE;
@@ -301,6 +333,8 @@ fn worker(
                 *match_mode,
                 case_insensitive,
                 re.as_ref(),
+                Some(addr_type),
+                strip_prefix,
             );
 
             if is_match {
@@ -361,6 +395,7 @@ fn worker_bip32(
     results: Arc<Mutex<Vec<FoundResult>>>,
     bip39_words: usize,
     target_count: usize,
+    strip_prefix: bool,
 ) {
     let secp = Secp256k1::new();
 
@@ -424,6 +459,8 @@ fn worker_bip32(
             *match_mode,
             case_insensitive,
             re.as_ref(),
+            Some(addr_type),
+            strip_prefix,
         );
 
         let n = counter.fetch_add(1, Ordering::Relaxed) + 1;

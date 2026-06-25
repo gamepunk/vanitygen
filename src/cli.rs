@@ -89,6 +89,13 @@ pub enum CliCommand {
         #[arg(long, short = 'q')]
         quiet: bool,
 
+        /// Disable automatic stripping of address-type prefix.
+        /// By default the address-type prefix (e.g. "1", "bc1q") is stripped
+        /// before matching, so you can just search for "Bit" instead of "1Bit".
+        /// With this flag, you must include the full prefix.
+        #[arg(long)]
+        no_strip_prefix: bool,
+
         /// Bark API key for iOS push notification (or set VANITY_BARK_KEY env).
         #[arg(long)]
         bark: Option<String>,
@@ -214,19 +221,38 @@ impl AddressType {
 }
 
 /// Validate that a prefix is syntactically possible for the chosen address type.
-pub fn validate_prefix(prefix: &str, addr_type: AddressType) -> Result<(), String> {
+///
+/// When `strip_prefix` is `true` (default), the function first strips the
+/// address-type prefix from the user pattern before validating the remaining
+/// characters.  This allows users to search for "Bit" instead of "1Bit".
+pub fn validate_prefix(prefix: &str, addr_type: AddressType, strip_prefix: bool) -> Result<(), String> {
     let hint = addr_type.prefix_hint();
-    if !prefix.starts_with(hint) {
-        return Err(format!(
-            "Address type {} must start with '{}', but prefix is \"{prefix}\"",
-            addr_type.label(),
-            hint,
-        ));
-    }
+
+    // When stripping is enabled, the user's pattern does NOT need to start
+    // with the address-type prefix — it will be stripped during matching.
+    // We still need to validate the remaining characters though.
+    let body = if strip_prefix {
+        // Strip the address-type prefix if present, otherwise use as-is.
+        if let Some(rest) = prefix.strip_prefix(hint) {
+            rest
+        } else {
+            prefix
+        }
+    } else {
+        if !prefix.starts_with(hint) {
+            return Err(format!(
+                "Address type {} must start with '{}', but prefix is \"{prefix}\"",
+                addr_type.label(),
+                hint,
+            ));
+        }
+        prefix
+    };
+
     // For Legacy / P2SH the rest must be valid Base58 characters.
     if addr_type == AddressType::Legacy || addr_type == AddressType::P2sh {
         const BASE58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        for c in prefix.chars() {
+        for c in body.chars() {
             if !BASE58.contains(c) {
                 return Err(format!(
                     "Character '{c}' is not in the Base58 alphabet (no 0/O/I/l)."
@@ -235,12 +261,13 @@ pub fn validate_prefix(prefix: &str, addr_type: AddressType) -> Result<(), Strin
         }
 
         // ── Base58Check version-byte constraints ──────────────────
-        // Due to Base58Check encoding, the second character of a P2SH
-        // address (version 0x05) is *always* uppercase (A–R) or digit
-        // (1–9) — never a lowercase letter.
-        if prefix.len() >= 2 {
-            let c2 = prefix.as_bytes()[1] as char;
-            if addr_type == AddressType::P2sh && c2.is_lowercase() {
+        if body.len() >= 2 {
+            let c2 = body.as_bytes()[1] as char;
+            if strip_prefix {
+                // When prefix is stripped, the second character of the
+                // original address includes its type prefix.  We can only
+                // validate if the user included the prefix.
+            } else if addr_type == AddressType::P2sh && c2.is_lowercase() {
                 let suggestion = make_second_upper(prefix);
                 return Err(format!(
                     "P2SH address prefix cannot have a lowercase letter at position 2 \
@@ -249,10 +276,9 @@ pub fn validate_prefix(prefix: &str, addr_type: AddressType) -> Result<(), Strin
             }
         }
     }
-    // For SegWit / Taproot, every character after the "bc1q" / "bc1p" prefix
-    // must be a valid Bech32 character (lowercase alphanumeric, excluding 1/b/i/o).
+    // For SegWit / Taproot, every character must be a valid Bech32 character.
     if addr_type == AddressType::Segwit || addr_type == AddressType::Taproot {
-        for c in prefix.chars() {
+        for c in body.chars() {
             let valid = c.is_ascii_lowercase() || c.is_ascii_digit();
             if !valid {
                 return Err(format!(

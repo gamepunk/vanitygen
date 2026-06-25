@@ -48,7 +48,6 @@ impl Config {
                 };
                 match toml::from_str(&raw) {
                     Ok(cfg) => {
-                        eprintln!("[config] loaded {}", path.display());
                         return cfg;
                     }
                     Err(e) => {
